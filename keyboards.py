@@ -71,7 +71,7 @@ def get_edit_menu(list_id):
         [InlineKeyboardButton(text = 'Добавить товар', callback_data = f'edit_add_{list_id}', style = 'success'),
         InlineKeyboardButton(text = 'Удалить товар', callback_data = f'edit_del_{list_id}', style = 'danger')],
         [InlineKeyboardButton(text = 'Пометить/убрать пометку "Срочно"', callback_data = f'edit_urgent_{list_id}', style = 'primary')],
-        [InlineKeyboardButton(text = 'Пометить/убрать отметку "Куплено"', callback_data = f'edit_buy_{list_id}', style = 'primary')],
+        [InlineKeyboardButton(text = 'Пометить/убрать пометку "Куплено"', callback_data = f'edit_buy_{list_id}', style = 'primary')],
         [InlineKeyboardButton(text = 'Назад', callback_data = f'edit_back_{list_id}')]
     ]
 )

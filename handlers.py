@@ -30,16 +30,37 @@ async def cmd_start(message: Message, state: FSMContext):
         if invite_list_id:
             list_title = await db.get_list_title(invite_list_id)
             if not list_title:
-                await message.answer("Этот список больше не существует ")
+                await message.answer("Этот список больше не существует!")
                 return
             
             if await db.is_user_in_list(message.from_user.id, invite_list_id):
                 await message.answer(f"Вы уже состоите в списке <b>«{list_title}»</b>!", 
                                     reply_markup = kb.menu, parse_mode = "HTML")
+                return
+            
+            user_lists = await db.get_user_lists(message.from_user.id)
+            guest_lists_count = 0
+            for lst in user_lists:
+                if lst['creator_id'] != message.from_user.id:
+                    guest_lists_count += 1
+
+            if guest_lists_count >= 20:
+                await message.answer(f"Не удалось присоединиться к списку <b>«{list_title}»</b>!\n\n"
+                    f"Вы уже вступили в максимальное количество чужих списков (допустимо не более <b>20</b>).", 
+                    reply_markup = kb.menu, parse_mode = 'HTML')
+                return
+
+            current_members = await db.list_members(invite_list_id)
+            if len(current_members) >= 20:
+                await message.answer(f"Не удалось присоединиться к списку <b>«{list_title}»</b>!\n\n"
+                    f"Достигнут лимит группы: в списке не может быть более <b>20 участников</b>!", 
+                    reply_markup = kb.menu, parse_mode = 'HTML')
+                return
             else:
                 await db.add_user_to_list(message.from_user.id, invite_list_id)
                 await message.answer(f"Вы вступили в список <b>«{list_title}»</b>!", 
                                     reply_markup = kb.menu, parse_mode = "HTML")
+                await notify_list_members(message, invite_list_id, f'Пользователь <b>{user_name}</b> присоединился к списку!')
         else:
             await message.answer(f'Это снова вы, {user_name}!', reply_markup = kb.menu)
 
@@ -74,10 +95,18 @@ async def reg_name(message: Message, state: FSMContext):
     if invite_list_id:
         list_title = await db.get_list_title(invite_list_id)
         if list_title:
-            await db.add_user_to_list(message.from_user.id, invite_list_id)
-            await message.answer(f'Вы успешно зарегистрировались!\n\nВаше имя: {data['name']}\n\n'
-                                 f'Вы добавлены в список <b>«{list_title}»</b>!',
-                                 reply_markup = kb.menu, parse_mode = 'HTML')
+            current_members = await db.list_members(invite_list_id)
+            if len(current_members) >= 20:
+                await message.answer(f'Вы успешно зарегистрировались!\n\nВаше имя: {data['name']}\n\n'
+                                     f'К сожалению, список <b>«{list_title}»</b> уже заполнен '
+                                     f'(максимум 20 участников), вы не были в него добавлены!',
+                                     reply_markup = kb.menu, parse_mode = 'HTML')
+            else:
+                await db.add_user_to_list(message.from_user.id, invite_list_id)
+                await message.answer(f'Вы успешно зарегистрировались!\n\nВаше имя: {data['name']}\n\n'
+                                     f'Вы добавлены в список <b>«{list_title}»</b>!',
+                                     reply_markup = kb.menu, parse_mode = 'HTML')
+                await notify_list_members(message, invite_list_id, f'Пользователь <b>{data['name']}</b> присоединился к списку!')
         else:
             await message.answer(f'Вы успешно зарегистрировались!\n\nВаше имя: {data['name']}\n\n'
                                  f'Cписок <b>«{list_title}»</b>, в который вас пригласили, больше не существует!',
@@ -101,8 +130,24 @@ async def cmd_view_my_lists(message: Message, state: FSMContext):
 #Функционал кнопки "Создать список" (Reply keyboard)
 @user.message(F.text == 'Создать список')
 async def cmd_create_list(message: Message, state: FSMContext):
-    await state.set_state(CreateList.waiting_list_name)
+    await state.clear()
+
+    user_lists = await db.get_user_lists(message.from_user.id)
+    own_lists_count = 0
+    for lst in user_lists:
+        if lst['creator_id'] == message.from_user.id:
+            own_lists_count += 1
+    
+    if own_lists_count >= 20:
+        await message.answer('<b>Превышен лимит создания списков!</b>\n\n'
+            'Вы не можете создать более <b>20 списков</b> одновременно!\n'
+            'Удалите один из существующих списков, чтобы создать новый', 
+            parse_mode='HTML'
+        )
+        return
+    
     await message.answer('Введите название списка:')
+    await state.set_state(CreateList.waiting_list_name)
 
 @user.message(CreateList.waiting_list_name)
 async def create_list_name(message: Message, state: FSMContext):
@@ -431,7 +476,19 @@ async def add_product_finish(callback: CallbackQuery, state: FSMContext):
 @user.callback_query(F.data.startswith('edit_del_'))
 async def del_product(callback: CallbackQuery):
     list_id = int(callback.data.split('_')[2])
+    list_name = await db.get_list_title(list_id)
     await callback.answer()
+    
+    creator_id = await db.get_list_creator(list_id)
+    if callback.from_user.id != creator_id:
+        msg = await callback.message.answer("Удалить товары из списка может только его создатель!")
+        await callback.answer()
+        await asyncio.sleep(5)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return
 
     products = await db.get_products(list_id)
     if not products:
@@ -444,7 +501,7 @@ async def del_product(callback: CallbackQuery):
         return
     
     await callback.message.edit_text(text = 'Нажмите на товар, который хотите удалить:',
-                                     reply_markup=kb.get_delete_products_menu(products, list_id))
+                                     reply_markup = kb.get_delete_products_menu(products, list_id))
 
 #Функционал меню удаления товаров (Inline keyboard)
 @user.callback_query(F.data.startswith('prod_confirm_del_'))
@@ -689,7 +746,7 @@ async def add_member(callback: CallbackQuery):
 
     text = (f'Добавление участников в список <b>«{list_name}»</b>\n\n'
             'Чтобы пригласить кого-то, отправьте эту ссылку:\n'
-            f'<code>{invite_link}</code>\n\n'
+            f'{invite_link}\n\n'
             'При переходе по ссылке пользователь станет участником списка')
     await callback.message.edit_text(text = text, reply_markup = kb.get_back_to_members_menu(list_id), parse_mode = 'HTML')
 
